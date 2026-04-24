@@ -185,12 +185,15 @@ def _tools_are_implemented() -> tuple[bool, str]:
 
 
 async def run_scenario(real: bool) -> int:
-    clear_log()
-
     ok, message = _tools_are_implemented()
     if not ok:
         print(message)
         return 3
+
+    # Clear AFTER the probe — the probe calls each tool to check if it raises
+    # NotImplementedError, and those successful calls would otherwise
+    # populate _TOOL_CALL_LOG before the real scenario runs.
+    clear_log()
 
     with example_sessions_dir("ex5-edinburgh-research", persist=real) as sessions_root:
         session = create_session(
