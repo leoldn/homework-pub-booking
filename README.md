@@ -230,7 +230,13 @@ point.
  └────────────────┘        └────────────────┘        └──────────────────┘
 ```
 
-Open three terminals in the repo, and run these in order:
+**First time only** — install Rasa Pro (it's opt-in, not in base setup):
+
+```bash
+make setup-rasa     # ~1-2 min, installs rasa-pro into .venv
+```
+
+Then open three terminals in the repo, and run these in order:
 
 ```bash
 # Terminal 1 — action server (runs ActionValidateBooking)

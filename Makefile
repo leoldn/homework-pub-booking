@@ -56,7 +56,15 @@ setup: ## Install Python 3.12, deps, and create .env from the template
 	  echo "       from a bundled fallback inside the Makefile."; \
 	  exit 1; \
 	fi
-	@echo "✓ make setup done. Next: edit .env, then run 'make verify'."
+	@echo ""
+	@echo "✓ make setup done. Next steps:"
+	@echo "    1. Edit .env (at minimum set NEBIUS_KEY)"
+	@echo "    2. make verify          — confirm env works with a cheap live LLM call"
+	@echo "    3. make ex5             — try the first exercise offline"
+	@echo ""
+	@echo "  For Ex6 (Rasa) you'll also need:  make setup-rasa"
+	@echo "  That installs an extra ~400MB of Rasa-related deps (opt-in)."
+	@echo ""
 
 .PHONY: env-bootstrap
 env-bootstrap: ## Regenerate .env.example from a bundled fallback (use if .env.example is missing)
@@ -94,17 +102,52 @@ check-submit: ## Run the local grader (advisory — CI at deadline is the author
 # own terminal. The educator harness spawns them automatically when
 # you `make ex6-real`.
 
+# The three Rasa targets all check that `rasa` is installed. If it's
+# not, they print a friendly install hint instead of the cryptic
+# "Failed to spawn rasa" error uv gives. Students can't miss it.
+
+define _rasa_preflight
+	@if ! $(UV) run --no-sync which rasa >/dev/null 2>&1; then \
+	  echo ""; \
+	  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"; \
+	  echo "  ✗ rasa-pro isn't installed in this venv yet"; \
+	  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"; \
+	  echo ""; \
+	  echo "  rasa-pro is an opt-in extra (~400MB of deps). Install it with:"; \
+	  echo ""; \
+	  echo "      make setup-rasa"; \
+	  echo ""; \
+	  echo "  That runs 'uv sync --extra rasa'. Takes 1-2 minutes on first install."; \
+	  echo "  Then re-run this command."; \
+	  echo ""; \
+	  echo "  Don't want to install rasa-pro yet?"; \
+	  echo "    tier-1 mock mode works without it:  make ex6"; \
+	  echo ""; \
+	  exit 1; \
+	fi
+endef
+
+.PHONY: setup-rasa
+setup-rasa: ## Install rasa-pro + deps (needed for Ex6 tier 2 and 3)
+	@echo "▶ Installing rasa-pro and related deps into .venv..."
+	@echo "   This is a one-time ~1-2 minute install."
+	@$(UV) sync --extra rasa
+	@echo "✓ rasa-pro installed. You can now run: make rasa-actions / make rasa-serve"
+
 .PHONY: rasa-train
 rasa-train: ## Train the Rasa model (reruns use the cached model)
+	$(_rasa_preflight)
 	@cd rasa_project && $(UV) run rasa train
 
 .PHONY: rasa-actions
 rasa-actions: ## Terminal 1 — run the Rasa action server on :5055
+	$(_rasa_preflight)
 	@echo "▶ Starting Rasa action server (port 5055). Ctrl-C to stop."
 	@cd rasa_project && $(UV) run rasa run actions -p 5055
 
 .PHONY: rasa-serve
 rasa-serve: ## Terminal 2 — run the Rasa server on :5005 (trains if needed)
+	$(_rasa_preflight)
 	@cd rasa_project && \
 	  if [ ! -d models ] || [ -z "$$(ls -A models 2>/dev/null)" ]; then \
 	    echo "▶ No trained model found; running rasa train first..."; \
