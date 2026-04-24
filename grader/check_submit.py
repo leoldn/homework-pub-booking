@@ -96,9 +96,35 @@ def run_mechanical(only: str | None) -> LayerResult:
     rc, _, _ = _run(["uv", "run", "pytest", "--collect-only", "-q"])
     layer.checks.append(_check("pytest_collects", rc == 0, 3))
 
-    # public tests
-    rc, out, _ = _run(["uv", "run", "pytest", "tests/public", "-q", "--no-header"])
-    layer.checks.append(_check("public_tests_pass", rc == 0, 5, f"pytest rc={rc}"))
+    # public tests — require genuine passes. A scaffold ships tests that
+    # pytest.skip() when student TODOs are unimplemented; those are skips,
+    # not passes. Parse the summary line to distinguish.
+    rc, out, err = _run(["uv", "run", "pytest", "tests/public", "-q", "--no-header"])
+    combined = (out or "") + (err or "")
+    passed_count = 0
+    skipped_count = 0
+    summary_re = re.search(r"(\d+)\s+passed(?:,\s*(\d+)\s+skipped)?", combined)
+    if summary_re:
+        passed_count = int(summary_re.group(1))
+        skipped_count = int(summary_re.group(2) or 0)
+    # The public suite has a minimum genuine-pass bar. With skips, the
+    # scaffold has ~24 passes + 3 skips. A real implementation drives
+    # the skips green. We require ≥ scaffold_count + 2 to count as "done".
+    # Simpler rule: no skips allowed.
+    skip_free = skipped_count == 0 and rc == 0
+    layer.checks.append(
+        _check(
+            "public_tests_pass",
+            skip_free,
+            5,
+            f"{passed_count} passed, {skipped_count} skipped — "
+            + (
+                "all genuine passes"
+                if skip_free
+                else "tests skip when your TODOs raise NotImplementedError; implement them"
+            ),
+        )
+    )
 
     # answers
     expected = [
@@ -155,32 +181,62 @@ def run_mechanical(only: str | None) -> LayerResult:
         )
     )
 
-    # Integrity check presence — look for verify_dataflow-shaped helpers
-    # in each scenario that has a scaffold. Crude grep, but the grader
-    # repo does the real check.
+    # Integrity check presence — each scenario dir must have a
+    # verify_dataflow function that isn't a TODO stub. We look at the
+    # function source: a body consisting of `raise NotImplementedError`
+    # doesn't count as an integrity check.
     scenario_dirs = [
         STARTER_DIR / "edinburgh_research",
         STARTER_DIR / "handoff_bridge",
     ]
     missing_integrity: list[str] = []
+    stub_integrity: list[str] = []
     for d in scenario_dirs:
         if not d.exists():
             continue
-        found = False
+        found_real = False
+        found_any = False
         for py in d.glob("*.py"):
-            if "verify_dataflow" in py.read_text(encoding="utf-8"):
-                found = True
+            try:
+                text = py.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            if "def verify_dataflow" not in text:
+                continue
+            found_any = True
+            # Extract the function body
+            fn_match = re.search(
+                r"def verify_dataflow\([^)]*\)[^:]*:(.*?)(?=\n(?:def |class |\Z))",
+                text,
+                flags=re.DOTALL,
+            )
+            if not fn_match:
+                continue
+            body = fn_match.group(1)
+            # If body is mostly a docstring + NotImplementedError, it's a stub.
+            stripped_body_lines = [
+                ln.strip()
+                for ln in body.splitlines()
+                if ln.strip() and not ln.strip().startswith("#")
+            ]
+            body_text = " ".join(stripped_body_lines)
+            is_stub = "raise NotImplementedError" in body_text and len(stripped_body_lines) < 10
+            if not is_stub:
+                found_real = True
                 break
-        if not found:
+        if not found_any:
             missing_integrity.append(d.name)
-    layer.checks.append(
-        _check(
-            "all_scenarios_have_integrity_check",
-            not missing_integrity,
-            5,
-            f"missing in: {missing_integrity}" if missing_integrity else "every scenario checked",
-        )
-    )
+        elif not found_real:
+            stub_integrity.append(d.name)
+
+    integrity_passed = not (missing_integrity or stub_integrity)
+    if missing_integrity:
+        detail = f"no verify_dataflow defined in: {missing_integrity}"
+    elif stub_integrity:
+        detail = f"verify_dataflow is still a TODO stub in: {stub_integrity}"
+    else:
+        detail = "every scenario has a real integrity check"
+    layer.checks.append(_check("all_scenarios_have_integrity_check", integrity_passed, 5, detail))
 
     return layer
 

@@ -20,6 +20,7 @@ Exit codes:
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
@@ -28,6 +29,42 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 BACKUP = REPO / ".educator_backup"
 SOLUTION = REPO / "solution"
+
+
+def _cache_dir() -> Path:
+    """XDG-standard cache path for educator logs. Used by diagnostics."""
+    if sys.platform == "darwin":
+        base = Path.home() / "Library" / "Caches"
+    elif sys.platform == "win32":
+        base = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
+    else:
+        base = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
+    p = base / "sovereign-agent" / "homework-pub-booking"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+class _Tee:
+    """Duplicate writes to multiple streams. Used for educator-validate's
+    split output: interactive terminal + cached log file for diagnostics."""
+
+    def __init__(self, *streams):
+        self.streams = streams
+
+    def write(self, data):
+        for s in self.streams:
+            try:
+                s.write(data)
+                s.flush()
+            except Exception:
+                pass
+
+    def flush(self):
+        for s in self.streams:
+            try:
+                s.flush()
+            except Exception:
+                pass
 
 
 class _C:
@@ -134,6 +171,25 @@ def print_section(title: str) -> None:
 
 
 def main() -> int:
+    # Tee stdout+stderr to a log file so `make educator-diagnostics` can
+    # read the last run without manual copy-paste.
+    log_path = _cache_dir() / "educator_validate.log"
+    log_file = log_path.open("w", encoding="utf-8")
+    original_stdout = sys.stdout
+    original_stderr = sys.stderr
+    sys.stdout = _Tee(original_stdout, log_file)
+    sys.stderr = _Tee(original_stderr, log_file)
+
+    try:
+        return _main_impl()
+    finally:
+        sys.stdout = original_stdout
+        sys.stderr = original_stderr
+        log_file.close()
+        print(_C.d(f"  (full log cached at {log_path})"))
+
+
+def _main_impl() -> int:
     print()
     print(_C.y("━" * 72))
     print(_C.b("  homework-pub-booking") + _C.d("  ·  ") + _C.b("educator validation harness"))

@@ -53,7 +53,11 @@ async def probe() -> int:
         "https://api.tokenfactory.nebius.com/v1/",
     )
     # Cheapest small model on Nebius — used only for the probe.
-    model = "google/gemma-2-2b-it"
+    # Use google/gemma-2-2b-it (the 27b-fast variant was removed by
+    # Nebius in April 2026). Override with NEBIUS_SMOKE_MODEL env var if
+    # this stops working; the probe's job is auth + network, not any
+    # specific model being hosted.
+    model = os.environ.get("NEBIUS_SMOKE_MODEL", "google/gemma-2-2b-it")
 
     try:
         from openai import AsyncOpenAI

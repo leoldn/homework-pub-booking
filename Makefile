@@ -176,6 +176,14 @@ educator-validate: ## [EDUCATOR] Back up, apply solution, run all scenarios, gra
 	fi
 	@$(UV) run python scripts/educator_validate.py
 
+.PHONY: educator-diagnostics
+educator-diagnostics: ## [EDUCATOR] Comprehensive diagnostics — paste output when asking for help
+	@$(UV) run python scripts/educator_diagnostics.py
+
+.PHONY: educator-diagnostics-quick
+educator-diagnostics-quick: ## [EDUCATOR] Diagnostics without network probes (fast)
+	@$(UV) run python scripts/educator_diagnostics.py --quick
+
 .PHONY: educator-backup
 educator-backup: ## [EDUCATOR] Snapshot starter/ and answers/ to .educator_backup/
 	@rm -rf .educator_backup
