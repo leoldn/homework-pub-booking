@@ -14,10 +14,13 @@ The grader checks for:
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from sovereign_agent.session.directory import Session
 from sovereign_agent.tools.registry import ToolRegistry, ToolResult, _RegisteredTool
+
+from starter.edinburgh_research.integrity import record_tool_call
 
 _SAMPLE_DATA = Path(__file__).parent / "sample_data"
 
@@ -41,9 +44,27 @@ def venue_search(near: str, party_size: int, budget_max_gbp: int = 1000) -> Tool
     MUST call record_tool_call(...) before returning so the integrity
     check can see what data was produced.
     """
-    # TODO 1a: load venues.json. Raise ToolError(SA_TOOL_DEPENDENCY_MISSING)
-    #          if the file is absent.
-    raise NotImplementedError("TODO 1: implement venue_search")
+    path = _SAMPLE_DATA / "venues.json"
+    venues = json.loads(path.read_text())
+    results = [
+        v
+        for v in venues
+        if v["open_now"]
+        and near.lower() in v["area"].lower()
+        and v["seats_available_evening"] >= party_size
+        and v["hire_fee_gbp"] + v["min_spend_gbp"] <= budget_max_gbp
+    ]
+    output = {"near": near, "party_size": party_size, "results": results, "count": len(results)}
+    record_tool_call(
+        "venue_search",
+        {"near": near, "party_size": party_size, "budget_max_gbp": budget_max_gbp},
+        output,
+    )
+    return ToolResult(
+        success=True,
+        output=output,
+        summary=f"venue_search({near}, party={party_size}): {len(results)} result(s)",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -61,7 +82,19 @@ def get_weather(city: str, date: str) -> ToolResult:
 
     MUST call record_tool_call(...) before returning.
     """
-    raise NotImplementedError("TODO 2: implement get_weather")
+    data = json.loads((_SAMPLE_DATA / "weather.json").read_text())
+    entry = data.get(city.lower(), {}).get(date)
+    if not entry:
+        return ToolResult(
+            success=False, output={}, summary=f"get_weather({city}, {date}): not found"
+        )
+    output = {"city": city, "date": date, **entry}
+    record_tool_call("get_weather", {"city": city, "date": date}, output)
+    return ToolResult(
+        success=True,
+        output=output,
+        summary=f"get_weather({city}, {date}): {entry['condition']}, {entry['temperature_c']}C",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -98,7 +131,49 @@ def calculate_cost(
 
     MUST call record_tool_call(...) before returning.
     """
-    raise NotImplementedError("TODO 3: implement calculate_cost")
+    cfg = json.loads((_SAMPLE_DATA / "catering.json").read_text())
+    venues = json.loads((_SAMPLE_DATA / "venues.json").read_text())
+    venue = next((v for v in venues if v["id"] == venue_id), None)
+
+    base = cfg["base_rates_gbp_per_head"][catering_tier]
+    mult = cfg["venue_modifiers"].get(venue_id, 1.0)
+    subtotal = int(base * mult * party_size * max(1, duration_hours))
+    service = int(subtotal * cfg["service_charge_percent"] / 100)
+    hire = (venue["hire_fee_gbp"] + venue["min_spend_gbp"]) if venue else 0
+    total = subtotal + service + hire
+
+    if total < 300:
+        deposit = 0
+    elif total <= 1000:
+        deposit = int(total * 0.20)
+    else:
+        deposit = int(total * 0.30)
+
+    output = {
+        "venue_id": venue_id,
+        "party_size": party_size,
+        "duration_hours": duration_hours,
+        "catering_tier": catering_tier,
+        "subtotal_gbp": subtotal,
+        "service_gbp": service,
+        "total_gbp": total,
+        "deposit_required_gbp": deposit,
+    }
+    record_tool_call(
+        "calculate_cost",
+        {
+            "venue_id": venue_id,
+            "party_size": party_size,
+            "duration_hours": duration_hours,
+            "catering_tier": catering_tier,
+        },
+        output,
+    )
+    return ToolResult(
+        success=True,
+        output=output,
+        summary=f"calculate_cost({venue_id}, {party_size}): total £{total}, deposit £{deposit}",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -126,7 +201,33 @@ def generate_flyer(session: Session, event_details: dict) -> ToolResult:
     IMPORTANT: this tool MUST be registered with parallel_safe=False
     because it writes a file.
     """
-    raise NotImplementedError("TODO 4: implement generate_flyer")
+    html = f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Event Flyer</title>
+<style>body{{font-family:sans-serif;max-width:600px;margin:2em auto}}dl{{display:grid;grid-template-columns:auto 1fr;gap:.5em 1em}}</style>
+</head><body>
+<h1>Edinburgh Pub Event</h1>
+<dl>
+  <dt>Venue</dt><dd data-testid="venue_name">{event_details.get("venue_name", "")}</dd>
+  <dt>Address</dt><dd data-testid="venue_address">{event_details.get("venue_address", "")}</dd>
+  <dt>Date</dt><dd data-testid="date">{event_details.get("date", "")}</dd>
+  <dt>Time</dt><dd data-testid="time">{event_details.get("time", "")}</dd>
+  <dt>Party size</dt><dd data-testid="party_size">{event_details.get("party_size", "")}</dd>
+  <dt>Weather</dt><dd data-testid="condition">{event_details.get("condition", "")}, <span data-testid="temperature_c">{event_details.get("temperature_c", "")}C</span></dd>
+  <dt>Total cost</dt><dd data-testid="total">£{event_details.get("total_gbp", "")}</dd>
+  <dt>Deposit</dt><dd data-testid="deposit">£{event_details.get("deposit_required_gbp", "")}</dd>
+</dl>
+</body></html>"""
+
+    path = session.workspace_dir / "flyer.html"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(html, encoding="utf-8")
+    output = {"path": "workspace/flyer.html", "bytes_written": len(html)}
+    record_tool_call("generate_flyer", {"event_details": event_details}, output)
+    return ToolResult(
+        success=True,
+        output=output,
+        summary=f"generate_flyer: wrote workspace/flyer.html ({len(html)} chars)",
+    )
 
 
 # ---------------------------------------------------------------------------

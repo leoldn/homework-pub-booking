@@ -4,28 +4,36 @@
 
 ### Your answer
 
-In my Ex7 run (session sess_a382a2149fc1), the planner's second
-subgoal was sg_2 "commit the booking under policy rules" with
-assigned_half: "structured". The signal that drove this was the task
-text naming a deterministic constraint — "under policy rules".
-Sovereign-agent's DefaultPlanner is prompted with the list of
-available halves and their purposes; when subgoal description
-mentions rules/policy/limits, the planner prefers structured.
+In my Ex7 run (session `sess_950730a8d1c7`, 2026-05-09T16:25:43), the planner
+was called with the task "book for party of 12 in Haymarket" and produced a
+single subgoal with `assigned_half: "loop"`. The handoff to the structured half
+wasn't a planner decision at all — it was the executor. Looking at the trace at
+timestamp `2026-05-09T16:25:43.791208+00:00`, the executor called
+`handoff_to_structured` with this reason:
 
-This decision is advisory, not physical. The orchestrator respects
-it only because both halves are wired up. If only a loop half
-existed (as in research_assistant), a subgoal assigned to structured
-would go to the void. That's failure mode #4 from the course slides.
+> "loop half identified a candidate venue; passing to structured half for
+> confirmation under policy rules"
 
-The broader lesson: the planner makes an architectural decision
-based on prose interpretation. Put the rules somewhere the LLM
-cannot mis-assign — in the structured half's Python — and prose
-ambiguity no longer matters.
+The phrase "policy rules" in the context was the signal. The executor saw that
+`handoff_to_structured` was available in the tool registry, the task mentioned
+confirmation under rules, and it made the call. The planner never explicitly
+assigned anything to the structured half in this session.
+
+That gap matters. If you removed `handoff_to_structured` from the tool registry
+(which I actually did briefly to stop the LLM spiralling in Ex5), the executor
+would have no mechanism to escalate regardless of what the task said. The
+architectural lesson is that the planner's `assigned_half` field is advisory —
+it shapes which tools the executor is pointed at, but the actual transition
+happens when the executor calls the tool. The two-level design (plan → execute →
+call) gives flexibility but means you can't reason about half-assignment from
+the planner output alone; you need to follow the executor trace.
 
 ### Citation
 
-- sessions/sess_a382a2149fc1/logs/tickets/tk_*/raw_output.json
-- sessions/sess_a382a2149fc1/logs/trace.jsonl:23
+- `sess_950730a8d1c7/logs/trace.jsonl` — `executor.tool_called` event at
+  `2026-05-09T16:25:43.791208+00:00`, tool: `handoff_to_structured`
+- `sess_950730a8d1c7/session.json` — planner subgoal has `assigned_half: "loop"`
+  throughout all three rounds
 
 ---
 
@@ -33,26 +41,38 @@ ambiguity no longer matters.
 
 ### Your answer
 
-During Ex5 development my integrity check caught a subtle fabrication
-that manual review missed. In session sess_de44a1b8eb12 the flyer
-claimed "Total: £560" and "Deposit: £112" — plausible numbers that
-followed the deposit formula in catering.json. I skimmed and moved on.
+In session `sess_ffc201998952` (a real-LLM run), the LLM spiralled through four
+`venue_search` calls with party_size=50, 50, 50, and then 20 — all returning
+zero results because no venue in the fixture seats 50 people. Rather than
+failing gracefully, it fabricated a venue called "The Royal Edinburgh" and
+called `generate_flyer` directly with made-up event details
+(`{"venue_name": "The Royal Edinburgh", "address": "1 Castle Rd, Edinburgh",
+"event_date": "2023-11-15", ...}`). It never called `get_weather` or
+`calculate_cost`. The flyer had blank cost and weather fields.
 
-verify_dataflow returned ok=False with unverified_facts=['£560','£112'].
-The trace showed calculate_cost returned total_gbp=540, deposit=0. The
-real total was £540 under the £300 deposit threshold. The LLM had
-written "£560" plausibly — close enough that a human reviewer wouldn't
-notice without cross-referencing.
+The integrity check passed vacuously — no numeric facts in the flyer to
+challenge. That's a problem, but the run itself fails because there's no
+`complete_task` call and no flyer with actual data.
 
-The check caught it because it compared against ground truth in
-_TOOL_CALL_LOG, not against "does this look reasonable." The lesson
-generalises: if the validator would pass a human skim, plant a
-deliberately-weird value like £9999 and confirm it's caught.
+The more direct example of the check doing its job: in the offline scripted
+session `sess_bca8d3033870`, the `FakeLLMClient` scripts `generate_flyer` with
+`total_gbp=540` and `deposit_required_gbp=0`. The real `calculate_cost` tool
+returns `{total_gbp: 556, deposit_required_gbp: 111}` and logs that to
+`_TOOL_CALL_LOG`. The scripted £540 only passes `verify_dataflow` because the
+`generate_flyer` tool itself logs its own `event_details` argument, putting 540
+in the log. If I replay the check without logging the `generate_flyer` call —
+simulating a case where the LLM injected £540 into the prompt rather than
+getting it from `calculate_cost` — `verify_dataflow` returns
+`ok=False, unverified_facts=['£540', '£0']`. The £9999 fabrication test from
+the README confirms the same pattern: change the flyer manually and the check
+reports `dataflow FAIL: 1 unverified fact(s): ['£9999']` because 9999 never
+appeared in any tool output.
 
 ### Citation
 
-- sessions/sess_de44a1b8eb12/workspace/flyer.md:12
-- sessions/sess_de44a1b8eb12/logs/trace.jsonl:15
+- `sess_ffc201998952/logs/trace.jsonl` — four `venue_search` calls at
+  12:30:27–12:30:42, then `generate_flyer` at 12:31:19 with fabricated venue
+- `sess_bca8d3033870/workspace/flyer.html` — shows £540, £0 from scripted client
 
 ---
 
@@ -60,20 +80,36 @@ deliberately-weird value like £9999 and confirm it's caught.
 
 ### Your answer
 
-I'd keep session directories (Decision 1) as the last thing standing
-and rebuild everything else if forced. The forward-only state machine
-(Decision 2) is important but fragile without directories. Tickets
-(Decision 3) I could rebuild as .jsonl files inside the session.
-Atomic-rename IPC (Decision 5) is replaceable by directory polling.
+Shipping this agent to a real pub, the first production failure I'd expect is
+the Rasa action server being temporarily unavailable — slow cold start, a
+restart after a config change, or a transient network hiccup. My `sess_950730a8d1c7`
+trace shows exactly this happening in development: every round returned
+`"rejection_reason": "rasa unreachable: <urlopen error [Errno 61] Connection
+refused>"` three times before the bridge hit `max_rounds_exceeded`. In
+production that means the customer's booking attempt silently exhausts all retry
+rounds and the session ends in a failed state with no actionable output.
 
-Session directories are the irreplaceable piece. Losing them:
-cross-tenant data leaks, reconstructing per-run state from logs,
-"how did this session end up this way" becomes SQL archaeology
-instead of cat. The slides compare it to git commits being the
-foundation — you can rebuild merge, diff, blame from commits but
-not commits from the rest. Session directories are commits.
+The primitive that surfaces this cleanly is the **fail-closed IPC rule** — at
+most one handoff file visible in `ipc/` at any time. When the bridge writes a
+forward handoff and Rasa immediately errors, the bridge archives the file before
+starting the next round. If the process crashes between writing and archiving,
+the stale file is still there and the next poll can detect it as a stuck session.
+The invariant — one file maximum — makes the failure mode observable. In
+`sess_950730a8d1c7`, after the session exhausted three rounds, the `ipc/`
+directory was left clean; the full rejection chain is in
+`logs/trace.jsonl` as three pairs of `session.state_changed` events
+(loop → structured, structured → loop) with the reason inline. Without the
+archiving step that enforces the one-file rule, you'd accumulate three stale
+handoff files and have no way to tell which round they belong to.
+
+The fix in production would be to add a Rasa health check before each forward
+handoff and surface the "service down" state as an explicit ticket error rather
+than burning retry rounds on it.
 
 ### Citation
 
-- sessions/sess_de44a1b8eb12/ — the directory itself
-- sessions/sess_a382a2149fc1/logs/trace.jsonl
+- `sess_950730a8d1c7/logs/trace.jsonl` — three `session.state_changed`
+  (structured → loop) events each with `rejection_reason: "rasa unreachable:
+  Connection refused"`
+- `starter/handoff_bridge/bridge.py:147–151` — the archive step that enforces
+  the one-file-in-ipc rule
